@@ -1,6 +1,7 @@
 var net = require('net');
 var fs = require('fs');
 var os = require('os');
+var StompRESTMsgBroker = require('stomp-rest-msg-broker');
 
 var DEFAULT_SERVICE_NAME = 'Pipe Entry Point Service';
 
@@ -23,19 +24,9 @@ var serviceName = (config['serviceName'] ? config['serviceName'] : DEFAULT_SERVI
 var PIPE_PORT = config['pipePort'];
 var RDP_PORT = config['rdpPort'];
 
-var notificationConfig = config["rest_notification"];
+var notificationConfig = config["restNotification"];
 notificationConfig = (notificationConfig ? notificationConfig : null);
 var sendNotificationMsg = (notificationConfig != null);
-if (sendNotificationMsg) {
-	if (!notificationConfig["protocol"]) {
-		console.error('missing "protocol" in notification config');
-		process.exit(1);
-	}
-	if (!notificationConfig["options"]) {
-		console.error('missing "options" in notification config');
-		process.exit(1);
-	}
-}
 
 var serverPipe = net.createServer();
 var serverRDP = net.createServer();
@@ -81,40 +72,14 @@ function getStatusObject() {
 	return ret;
 }
 
-function sendNotification(statusObj, onDone) {
-	var protocol = notificationConfig["protocol"];
-	var options = notificationConfig["options"];
-	var httpModule = require(protocol);
-	var req = httpModule.request(options, function(res) {
-		//console.log("statusCode: ", res.statusCode);
-		//console.log("headers: ", res.headers);
-		res.setEncoding('utf8');
-		var s = "";
-		res.on('data', function(d) {
-			//process.stdout.write(d);
-			s += d;
-		});
-		res.on('end', function() {
-			try {
-				if (res.statusCode != 200) throw "http returns status code of " + res.statusCode;
-				var o = JSON.parse(s);
-				if (o.exception) throw o.exception;
-				if (typeof onDone === 'function') onDone(null, o.receipt_id);
-			} catch(e) {
-				if (typeof onDone === 'function') onDone(e, null);
-			}
-		});
+function sendNotification(statusObj) {
+	var broker = new StompRESTMsgBroker();
+	broker.send(notificationConfig, {persistence: true}, JSON.stringify(statusObj), function(err, receipt_id) {
+		if (err)
+			console.error('!!! Error sending notification: ' + err.toString());
+		else
+			console.log('notification sent successfully, receipt_id=' + receipt_id);		
 	});
-	req.on('error', function(e) {
-		if (typeof onDone === 'function') onDone(e, null);
-	});
-	var o = {"headers": {}, "message": JSON.stringify(statusObj)};
-	req.end(JSON.stringify(o));
-}
-
-function onSendNotificationDone(err, receipt_id) {
-	if (err) console.error('!!! error sending notification: ' + err.toString());
-	else console.log('notification sent successfully, receipt_id=' + receipt_id);	
 }
 
 function serverPipeListen() {
@@ -137,7 +102,7 @@ function changeStateToIdle() {
 	serverPipeListen();
 	state = 'idle';
 	console.log('state = ' + state);
-	if (sendNotificationMsg) sendNotification(getStatusObject(), onSendNotificationDone);
+	if (sendNotificationMsg) sendNotification(getStatusObject());
 }
 
 function changeStateToPipeOpened() {
@@ -149,7 +114,7 @@ function changeStateToPipeOpened() {
 	serverRDPListen();
 	state = 'pipe_opened';
 	console.log('state = ' + state);
-	if (sendNotificationMsg) sendNotification(getStatusObject(), onSendNotificationDone);
+	if (sendNotificationMsg) sendNotification(getStatusObject());
 }
 
 serverRDP.on('connection', function(socket) {
